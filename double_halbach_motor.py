@@ -1,7 +1,7 @@
 """
 OpenMDAO component modeling a double Halbach array permanent-magnet ironless axial-flux motor.
 
-Based on work by Kirsten P. Duffy.
+Based on work by Kirsten P. Duffy, Thomas Tallerico, and Jeff Chin.
 OpenMDAO Component by Kenneth T. Moore
 """
 from __future__ import division, print_function
@@ -63,9 +63,9 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
         # Discretization
         self.nr = 10
-        self.nx = 10
-        self.ny = 10
-        self.ntime = 100
+        self.nx = 200
+        self.ny = 200
+        self.ntime = 2
 
     def setup(self):
         """
@@ -181,7 +181,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         F = np.empty((2*nphase, ))
         T_coil = np.empty((nr, ))
         T_total = np.empty((ntime, ))
-        Bmax = 0.0
+        B_sq_max = 0.0
 
         # Integrate over time.
         for z in range(ntime):
@@ -232,10 +232,12 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                     By0 = Bterm * np.outer(cos_kx, cosh_ky)
                     Bx0 = Bterm * np.outer(cos_kx, sinh_ky)
 
-                    B = np.max((Bx0**2 + By0**2)**0.5)
-                    Bmax = max(B, Bmax)
+                    B_sq = np.max((Bx0**2 + By0**2))
+                    B_sq_max = max(B_sq, B_sq_max)
 
-                    F[n] = J[n] * np.sum(By0) * dx * dy * dr
+                    # Analytically integrate over x and y
+                    By = -Bterm * (np.sin(k*x[-1]) - np.sin(k*x[0])) * (sinh_ky[-1] - sinh_ky[0]) / k**2
+                    F[n] = J[n] * By * dr
 
                 # Sum Torque from all coils at radius r.
                 T_coil[q] = np.abs(r_q * cfill * np.sum(F))
@@ -250,7 +252,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         PR = np.sum(PR) / ntime
 
         # Eddy loss calculcation. (W)
-        Pe = pi*(RPM/60.)**2 * npole * (1000./R) * Awire * nw * (RF-R0) * nphase * npole * 2.0 * Bmax
+        Pe = pi*(RPM/60.)**2 * npole * (1000./R) * Awire * nw * (RF-R0) * nphase * npole * 2.0 * B_sq_max
 
         efficiency = P/(P+PR+Pe)
 
@@ -265,6 +267,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         outputs['eddy_current_loss'] = Pe * 0.001
         outputs['efficiency'] = efficiency
 
+        print(nx, B_sq_max)
 
 if __name__ == "__main__":
 
@@ -278,3 +281,7 @@ if __name__ == "__main__":
 
     for name in ['power', 'power_density', 'resistive_loss', 'eddy_current_loss', 'efficiency']:
         print(name, prob['comp.' + name])
+
+    #for jj in np.logspace(0.3, 4, 30):
+        #prob.model.comp.nx = int(jj)
+        #prob.run_model()
