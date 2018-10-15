@@ -10,7 +10,7 @@ from math import pi
 
 import numpy as np
 
-from openmdao.api import ExplicitComponent
+from openmdao.api import ExplicitComponent, AnalysisError
 
 CITATION = """@PROCEEDINGS{
               Duffy2016,
@@ -43,29 +43,26 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.cite = CITATION
 
         # Rotor Material and Physical Constant Parameters
-        self.lm1 = 10.0            # Magnet length (radial)
         self.npole = 24            # Number of magnetic pole pairs
-        self.nm = 4                # Number of magnets in a pole pair
+        self.nm = 8                # Number of magnets in a pole pair
         self.Br = 1.0              # Permanent magnet remanence flux (1T = 1N*m/Amp)
-        self.rho_mag = 7300.       # Magnet material mass density (kg/m**3)
+        self.rho_mag = 7500.       # Magnet material mass density (kg/m**3)
 
         # Stator Material and Physical Constant Parameters
         self.ag = .001              # Air gap between rotor and stator. (m)
         self.nphase = 3             # Number of Phases
-        self.rho_stator = 8960.     # Density of stator material (Cu) (kg/m**3)
+        self.rho_stator = 8940.     # Density of stator material (Cu) (kg/m**3)
         self.Imax = 6.0             # Max current for 1 wire (Amp)
-        self.R = 34.1               # Wire resistance (ohms/Km)
+        self.R = 1.68e-8            # Wire resistance (ohms * m)
         self.minwall = .1 * .0254   # Min thickness of wire cores (tooth) at inner r (m)
         self.cfill = .5             # Copper fill percentage
 
-        rwire = .0004
-        self.Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2)
+        self.rwire = rwire = .000127 * 0.5 * .1
+        self.Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
 
         # Discretization
         self.nr = 10
-        self.nx = 200
-        self.ny = 200
-        self.ntime = 2
+        self.ntime = 1              # Currently only used as a sanity check.
 
     def setup(self):
         """
@@ -84,10 +81,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.add_input('RPM', val=8600., units='rpm',
                        desc='Motor rotational speed.')
 
-        self.add_input('magnet_width', val=3./8. * 0.0254, units='m',
+        self.add_input('magnet_width', val=.005, units='m',
                        desc='Magnet width (tangential).')
 
-        self.add_input('magnet_depth', val=3./16. * 0.0254, units='m',
+        self.add_input('magnet_depth', val=.005, units='m',
                        desc='Magnet depth (axial).')
 
         self.add_input('yg', val=.0035 , units='m',
@@ -136,10 +133,9 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         Imax = self.Imax
         R = self.R
         Br = self.Br
+        rwire = self.rwire
 
         ntime = self.ntime
-        nx = self.nx
-        ny = self.ny
         nr = self.nr
 
         # Thickness of coil
@@ -161,18 +157,17 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         dr = (RF - R0) / nr
         r = R0 + 0.5*dr + dr*np.arange(nr)
 
-        # Discretize in y
-        dy = 2.0 * (yg - ag) / (ny-1)
-        y = -yg + ag + dy*np.arange(ny)
-
-        # Discretization of x depends on r, so it is done later.
-        dx = xw / (nx-1)
+        # Discretize in y: just need start and end
+        y = np.array([-yg + ag, yg - ag])
 
         # Discretize in time
         omega = RPM / 30. * pi
-        t_end = 2.0 * pi / (npole * omega)
-        dt = t_end / (ntime-1)
-        t = dt*np.arange(ntime)
+        if ntime > 1:
+            t_end = 2.0 * pi / (npole * omega)
+            dt = t_end / (ntime-1)
+            t = dt*np.arange(ntime)
+        else:
+            t = np.array([0.0])
 
         # Magnet mass
         M_magnet = self.rho_mag * xm * ym * (RF - R0) * npole * nm * 2.0
@@ -181,19 +176,21 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         F = np.empty((2*nphase, ))
         T_coil = np.empty((nr, ))
         T_total = np.empty((ntime, ))
-        B_sq_max = 0.0
 
         # Integrate over time.
         for z in range(ntime):
             t_z = t[z]
 
             # Define Coil Currents in each coil direction
-            I = Imax * np.cos(npole * omega * t_z + (2 * pi / nphase ) * np.arange(nphase))
+            I = Imax * np.cos(npole * omega * t_z - (2 * pi / nphase ) * np.arange(nphase))
             I = np.append(I, -I)     # current moves in and out of plane
-            J = I / Awire            # Amps/m^2 Current Density
+            J = I / (Awire*nw)            # Amps/m**2 Current Density
+
+            # save peak current density in Amps/mm**s
+            self.current_density = Imax / (Awire*nw) * .000001
 
             # Calculate resistance.
-            PR[z] = npole * R * wire_length * .001 * np.sum(I**2)
+            PR[z] = npole * R * wire_length * np.sum(I**2)
 
             # Integrate over radius (dr)
             for q in range(nr):
@@ -209,6 +206,9 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
                 # Percent of material that is magnet in x direction.
                 e = (nm * xm) / xp
+                if e > 1.0:
+                    msg = "Magnets are too large for the allotted space."
+                    raise AnalysisError(msg)
 
                 # Define Coil Currents and x start points.
                 xws = 0.5 * (xp + xm) - xw + xp / nphase * np.arange(nphase) + x_adjust
@@ -217,33 +217,35 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 # Intermediate terms for Flux calculation.
                 k = 2.0 * pi / xp
                 Bterm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e*pi/nm) * nm/pi
-                cosh_ky = np.cosh(k*y)
                 sinh_ky = np.sinh(k*y)
 
                 # Force is calculated one coil at a time.
                 for n in range(2*nphase):   # Current always semetric about center
                     xws_n = xws[n]
 
-                    # x values for current coil.
-                    x = xws_n + dx * np.arange(nx)
+                    # x start and end values for current coil.
+                    x = np.array([xws_n, xws_n + xw])
 
-                    # Integration over x and y can be done in one vector operation.
-                    cos_kx = np.cos(k*x)
-                    By0 = Bterm * np.outer(cos_kx, cosh_ky)
-                    Bx0 = Bterm * np.outer(cos_kx, sinh_ky)
-
-                    B_sq = np.max((Bx0**2 + By0**2))
-                    B_sq_max = max(B_sq, B_sq_max)
-
-                    # Analytically integrate over x and y
+                    # Analytically integrate the flux over x and y
                     By = -Bterm * (np.sin(k*x[-1]) - np.sin(k*x[0])) * (sinh_ky[-1] - sinh_ky[0]) / k**2
+
+                    # Flux to Force
                     F[n] = J[n] * By * dr
 
-                # Sum Torque from all coils at radius r.
-                T_coil[q] = np.abs(r_q * cfill * np.sum(F))
+                # Estimate the flux squared for Eddy Loss calculation.
+                # Max flux occurs at
+                # - innermost radius
+                # - at x (and phase) where cos(kx) is 1
+                # - at y on either edge
+                # sinh(x)**2 + cosh(x)**2 = cosh(2x)
+                if q == 0:
+                    B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
 
-            # Sum torque from all radii.
-            T_total[z] = np.sum(T_coil) * 2.0 * npole
+                # Torque for each coil at radius r.
+                T_coil[q] = np.abs(r_q * np.sum(F))
+
+            # Torque from each radii.
+            T_total[z] = np.sum(T_coil) * npole
 
         # Power at Rpm. (W)
         P = np.sum(T_total) * omega / ntime
@@ -252,12 +254,13 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         PR = np.sum(PR) / ntime
 
         # Eddy loss calculcation. (W)
-        Pe = pi*(RPM/60.)**2 * npole * (1000./R) * Awire * nw * (RF-R0) * nphase * npole * 2.0 * B_sq_max
+        vol_cond = 2.0 * (RF - R0) * Awire * nw * nphase * npole
+        Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / R * B_sq_max_est
 
-        efficiency = P/(P+PR+Pe)
+        efficiency = (P - PR - Pe) / P
 
         # Mass sum. (kg)
-        M = wire_length * Awire * self.rho_stator * npole * nphase + M_magnet
+        M = wire_length * Awire * nw * self.rho_stator * npole * nphase + M_magnet
 
         power_density = P/M * 0.001
 
@@ -267,7 +270,6 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         outputs['eddy_current_loss'] = Pe * 0.001
         outputs['efficiency'] = efficiency
 
-        print(nx, B_sq_max)
 
 if __name__ == "__main__":
 
