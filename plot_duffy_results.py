@@ -22,6 +22,7 @@ class MotorModel(Group):
         # Outer diameter is fixed (mm)
         od_fixed = 139.7
 
+        # Convert to radius (m)
         or_fixed = od_fixed * 0.5 * .001
 
         # Build model
@@ -42,22 +43,13 @@ prob = Problem(model=MotorModel())
 prob.setup()
 motor = prob.model.motor
 
-prob['motor.RPM'] = 7200
-prob['motor.yg'] = 0.5 * .003 + motor.ag
-prob['magnet_width'] = .0016
-prob['magnet_depth'] = .0016
-motor.npole = 16
-motor.nm = 10
-
-# Paper calculates flux at average radius.
-motor.nr = 1
-
 # -------------------------
 # Power vs OD/ID (Figure 5, 6, 7)
 # -------------------------
 
 desvar = np.linspace(0.45, 0.9, NX)
 sidevar = [3, 10, 20, 30]
+#sidevar = [30]
 result1 = np.empty((NX, 4))
 result2 = np.empty((NX, 4))
 result3 = np.empty((NX, 4))
@@ -65,24 +57,42 @@ result3 = np.empty((NX, 4))
 for k, val2 in enumerate(sidevar):
     for j, val in enumerate(desvar):
 
-        R0 = val * prob['outer_radius']
-        yg = prob['yg']
+        # Paper calculates flux at average radius.
+        motor.nr = 1
 
+        prob['motor.RPM'] = 7200
+        yg = prob['motor.yg'] = 0.5 * .003 + motor.ag
+        npole = motor.npole = 16
+        nm = motor.nm = 10
         minwall = motor.minwall
         ag = motor.ag
-        npole = motor.npole
         nphase = motor.nphase
-        cfill = motor.cfill
+        cfill = motor.cfill = 0.5
+
+        # This is calculated from rwire, so don't set it.
         Awire = motor.Awire
+
+        # Paper sets a constant current density. We can mimic this by varying the
+        # max current.
+        R0 = val * 139.7 * 0.5 * .001
 
         yw = 2.0 * (yg - ag)
         A = (2.0*R0*np.pi/(nphase*npole) - minwall) * yw * 0.5
         nw = np.floor(A * cfill/Awire)
 
         Imax = val2 * (Awire*nw) * 1.0e6
-
-        prob['ID_OD_ratio'] = val
         motor.Imax = Imax
+
+        # Set Magnet width so that each design has maximum e percentage.
+        xp = 2.0 * np.pi * R0 / npole
+        xm = xp / nm
+
+        if j == 0:
+            prob['magnet_width'] = xm
+            prob['magnet_depth'] = xm
+
+        # ID/OD ratio is a design var.
+        prob['ID_OD_ratio'] = val
 
         prob.run_model()
 
@@ -110,7 +120,6 @@ plt.plot(desvar, result3[:, 3])
 plt.xlabel("Ratio of Motor ID to OD")
 plt.ylabel('Power Density (kW/kg)')
 plt.title("Power Density vs OD/ID")
-plt.show()
 
 plt.figure(3)
 plt.plot(desvar, result2[:, 0])

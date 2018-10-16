@@ -45,7 +45,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Rotor Material and Physical Constant Parameters
         self.npole = 24            # Number of magnetic pole pairs
         self.nm = 8                # Number of magnets in a pole pair
-        self.Br = 1.0              # Permanent magnet remanence flux (1T = 1N*m/Amp)
+        self.Br = 1.35             # Permanent magnet remanence flux (1T = 1N*m/Amp)
         self.rho_mag = 7500.       # Magnet material mass density (kg/m**3)
 
         # Stator Material and Physical Constant Parameters
@@ -57,7 +57,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.minwall = .1 * .0254   # Min thickness of wire cores (tooth) at inner r (m)
         self.cfill = .5             # Copper fill percentage
 
-        self.rwire = rwire = .000127 * 0.5 * .1
+        self.rwire = rwire = .000127 * 0.5
         self.Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
 
         # Discretization
@@ -88,7 +88,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                        desc='Magnet depth (axial).')
 
         self.add_input('yg', val=.0035 , units='m',
-                       desc='Distance between rotor and stator cenerline.')
+                       desc='Distance between rotor surface and stator centerline.')
 
         # Outputs
         # -------
@@ -150,7 +150,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Number of wires per phase
         nw = np.floor(A * cfill/Awire)
 
-        # Estimate Minimum Length of 1 Wire
+        # Estimate Minimum Length of all Wire
         wire_length = nw*(2.0*(RF-R0) + (2.0*RF*pi + 2*R0*pi)/(npole*nphase))
 
         # Discretize in radial direction
@@ -182,11 +182,11 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             t_z = t[z]
 
             # Define Coil Currents in each coil direction
-            I = Imax * np.cos(npole * omega * t_z - (2 * pi / nphase ) * np.arange(nphase))
+            I = Imax * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
             I = np.append(I, -I)     # current moves in and out of plane
-            J = I / (Awire*nw)            # Amps/m**2 Current Density
+            J = I / (Awire*nw)       # Amps/m**2 Current Density
 
-            # save peak current density in Amps/mm**s
+            # save peak current density in Amps/mm**2
             self.current_density = Imax / (Awire*nw) * .000001
 
             # Calculate resistance.
@@ -211,8 +211,14 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                     raise AnalysisError(msg)
 
                 # Define Coil Currents and x start points.
-                xws = 0.5 * (xp + xm) - xw + xp / nphase * np.arange(nphase) + x_adjust
-                xws = np.append(xws, xws - xw + xp / nphase)   # Negative versions of each coil
+                # Equally spaced coils centerpoints + time adjust.
+                delta = xp / (2.0*nphase)
+                xws = delta * np.arange(2*nphase) + 0.5*delta + x_adjust
+
+                # Reorder to A+ C- B+ A- C+ B-
+                xws = xws[np.array([0, 2, 4, 3, 5, 1])]
+
+                print(xp, xws)
 
                 # Intermediate terms for Flux calculation.
                 k = 2.0 * pi / xp
@@ -220,7 +226,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 sinh_ky = np.sinh(k*y)
 
                 # Force is calculated one coil at a time.
-                for n in range(2*nphase):   # Current always semetric about center
+                for n in range(2*nphase):   # Current always symmetric about center
                     xws_n = xws[n]
 
                     # x start and end values for current coil.
@@ -246,6 +252,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
             # Torque from each radii.
             T_total[z] = np.sum(T_coil) * npole
+            print(T_coil)
 
         # Power at Rpm. (W)
         P = np.sum(T_total) * omega / ntime
@@ -260,8 +267,9 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         efficiency = (P - PR - Pe) / P
 
         # Mass sum. (kg)
-        M = wire_length * Awire * nw * self.rho_stator * npole * nphase + M_magnet
+        M = wire_length * Awire * self.rho_stator * npole * nphase + M_magnet
 
+        # Power Density (converted to kW/kg)
         power_density = P/M * 0.001
 
         outputs['power'] = P * 0.001
