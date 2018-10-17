@@ -218,8 +218,6 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 # Reorder to A+ C- B+ A- C+ B-
                 xws = xws[np.array([0, 2, 4, 3, 5, 1])]
 
-                print(xp, xws)
-
                 # Intermediate terms for Flux calculation.
                 k = 2.0 * pi / xp
                 Bterm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e*pi/nm) * nm/pi
@@ -272,6 +270,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Power Density (converted to kW/kg)
         power_density = P/M * 0.001
 
+        # Convert all outputs to kg, where applicable
         outputs['power'] = P * 0.001
         outputs['power_density'] = power_density
         outputs['resistive_loss'] = PR * 0.001
