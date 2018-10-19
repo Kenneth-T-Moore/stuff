@@ -60,6 +60,14 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.rwire = rwire = .000127 * 0.5
         self.Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
 
+        # Define Coil Currents and x start points.
+        # These are for the motor in the Duffy paper, 90 degree load.
+        # Note, these are normalized values.
+        delta = 1.0 / (2.0*self.nphase)
+        xws_norm = delta * np.arange(2*self.nphase)
+        # Reorder to A+ C- B+ A- C+ B-
+        self.xws_norm = xws_norm[np.array([0, 2, 4, 3, 5, 1])]
+
         # Discretization
         self.nr = 10
         self.ntime = 1              # Currently only used as a sanity check.
@@ -134,6 +142,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         R = self.R
         Br = self.Br
         rwire = self.rwire
+        xws_norm = self.xws_norm
 
         ntime = self.ntime
         nr = self.nr
@@ -170,7 +179,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             t = np.array([0.0])
 
         # Magnet mass
-        M_magnet = self.rho_mag * xm * ym * (RF - R0) * npole * nm * 2.0
+        M_magnet = self.rho_mag * xm * ym * (RF - R0) * npole * nm * 2
 
         PR = np.empty((ntime, ))
         F = np.empty((2*nphase, ))
@@ -206,17 +215,12 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
                 # Percent of material that is magnet in x direction.
                 e = (nm * xm) / xp
-                if e > 1.0:
+                if e > 1.0 + 1e-8:
                     msg = "Magnets are too large for the allotted space."
                     raise AnalysisError(msg)
 
                 # Define Coil Currents and x start points.
-                # Equally spaced coils centerpoints + time adjust.
-                delta = xp / (2.0*nphase)
-                xws = delta * np.arange(2*nphase) + 0.5*delta + x_adjust
-
-                # Reorder to A+ C- B+ A- C+ B-
-                xws = xws[np.array([0, 2, 4, 3, 5, 1])]
+                xws = xws_norm * xp + x_adjust
 
                 # Intermediate terms for Flux calculation.
                 k = 2.0 * pi / xp
@@ -250,7 +254,6 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
             # Torque from each radii.
             T_total[z] = np.sum(T_coil) * npole
-            print(T_coil)
 
         # Power at Rpm. (W)
         P = np.sum(T_total) * omega / ntime

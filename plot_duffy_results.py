@@ -64,7 +64,7 @@ for k, val2 in enumerate(sidevar):
         yg = prob['motor.yg'] = 0.5 * .003 + motor.ag
         npole = motor.npole = 16
         nm = motor.nm = 10
-        minwall = motor.minwall
+        minwall = motor.minwall = 0
         ag = motor.ag
         nphase = motor.nphase
         cfill = motor.cfill = 0.5
@@ -74,20 +74,22 @@ for k, val2 in enumerate(sidevar):
 
         # Paper sets a constant current density. We can mimic this by varying the
         # max current.
-        R0 = val * 139.7 * 0.5 * .001
+        Rf = 139.7 * 0.5 * .001
+        R0 = val * Rf
+        Rmid = 0.5 * (Rf + R0)
 
+        # Main difference: Duffy ignores cfill during calculation of current density.
         yw = 2.0 * (yg - ag)
-        A = (2.0*R0*np.pi/(nphase*npole) - minwall) * yw * 0.5
-        nw = np.floor(A * cfill/Awire)
+        coil_area = yw * (2.0 * np.pi * Rmid)/(nphase * 2 * npole)
 
-        Imax = val2 * (Awire*nw) * 1.0e6
+        Imax = val2 * coil_area * 1.0e6
         motor.Imax = Imax
 
-        # Set Magnet width so that each design has maximum e percentage.
-        xp = 2.0 * np.pi * R0 / npole
+        # Set Magnet width so that each design has maximum e percentage at the midpoint radius
+        xp = 2.0 * np.pi * Rmid / npole
         xm = xp / nm
 
-        if j == 0:
+        if True or j == 0:
             prob['magnet_width'] = xm
             prob['magnet_depth'] = xm
 
