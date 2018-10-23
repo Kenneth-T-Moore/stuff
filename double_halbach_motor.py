@@ -53,12 +53,11 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.nphase = 3             # Number of Phases
         self.rho_stator = 8940.     # Density of stator material (Cu) (kg/m**3)
         self.Imax = 6.0             # Max current for 1 wire (Amp)
-        self.R = 1.68e-8            # Wire resistance (ohms * m)
+        self.resistivity = 1.68e-8  # Wire resistivity (ohms * m)
         self.minwall = .1 * .0254   # Min thickness of wire cores (tooth) at inner r (m)
         self.cfill = .5             # Copper fill percentage
 
-        self.rwire = rwire = .000127 * 0.5
-        self.Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
+        self.rwire = rwire = .000255 * 0.5
 
         # Define Coil Currents and x start points.
         # These are for the motor in the Duffy paper, 90 degree load.
@@ -71,6 +70,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Discretization
         self.nr = 10
         self.ntime = 1              # Currently only used as a sanity check.
+
+    def initialize(self):
+        self.options.declare('overlap', False,
+                             desc='Set to True for overlapping windings. Default is concentrated.')
 
     def setup(self):
         """
@@ -137,15 +140,17 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         npole = self.npole
         nphase = self.nphase
         cfill = self.cfill
-        Awire = self.Awire
         Imax = self.Imax
-        R = self.R
+        resistivity = self.resistivity
         Br = self.Br
         rwire = self.rwire
         xws_norm = self.xws_norm
 
         ntime = self.ntime
         nr = self.nr
+
+        # Area of a single wire strand.
+        Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
 
         # Thickness of coil
         yw = 2.0 * (yg - ag)
@@ -160,7 +165,11 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         nw = np.floor(A * cfill/Awire)
 
         # Estimate Minimum Length of all Wire
-        wire_length = nw*(2.0*(RF-R0) + (2.0*RF*pi + 2*R0*pi)/(npole*nphase))
+        # (Assumes 1 wire per Phase coils joined on inner radius)
+        if self.options['overlap']:
+            wire_length = 2.0*(RF-R0)*npole + pi*(RF + R0)
+        else:
+            wire_length = 2.0*(RF-R0)*npole + 2.0*pi*(RF + R0)/nphase
 
         # Discretize in radial direction
         dr = (RF - R0) / nr
@@ -199,7 +208,8 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             self.current_density = Imax / (Awire*nw) * .000001
 
             # Calculate resistance.
-            PR[z] = npole * R * wire_length * np.sum(I**2)
+            phase_R = wire_length * resistivity / (A * cfill)
+            PR[z] = nphase * 0.5 * phase_R * np.sum(I**2)
 
             # Integrate over radius (dr)
             for q in range(nr):
@@ -263,12 +273,12 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
         # Eddy loss calculcation. (W)
         vol_cond = 2.0 * (RF - R0) * Awire * nw * nphase * npole
-        Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / R * B_sq_max_est
+        Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
 
         efficiency = (P - PR - Pe) / P
 
         # Mass sum. (kg)
-        M = wire_length * Awire * self.rho_stator * npole * nphase + M_magnet
+        M = wire_length * nw * Awire * self.rho_stator * nphase + M_magnet
 
         # Power Density (converted to kW/kg)
         power_density = P/M * 0.001
