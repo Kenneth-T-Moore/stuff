@@ -18,8 +18,23 @@ class TestHalbachMotor(unittest.TestCase):
 
         prob.setup(force_alloc_complex=True)
 
-        prob['comp.resistive_loss'] = 0.11
-        prob['comp.eddy_current_loss'] = 0.27
+        # kW of loss
+        prob['comp.resistive_loss'] = 1.5
+        prob['comp.eddy_current_loss'] = 6.3
+
+        prob.run_model()
+
+        J = prob.check_partials(method='cs')
+
+        assert_check_partials(J, atol=1e-7, rtol=1e-7)
+
+    def test_motor_derivatives(self):
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('comp', DoubleHalbachMotorComp())
+
+        prob.setup(force_alloc_complex=True)
 
         prob.run_model()
 

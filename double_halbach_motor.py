@@ -185,7 +185,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
         # Number of wires per phase
         # (No longer used in calculation, but kept for reference.)
-        nw = np.floor(A * cfill/Awire)
+        # nw = np.floor(A * cfill/Awire)
 
         # Area of all wires in a single coil.
         Awires = A * cfill
@@ -216,10 +216,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Magnet mass
         M_magnet = self.rho_mag * xm * ym * (RF - R0) * npole * nm * 2
 
-        PR = np.empty((ntime, ))
-        F = np.empty((2*nphase, ))
-        T_coil = np.empty((nr, ))
-        T_total = np.empty((ntime, ))
+        PR = np.empty((ntime, ), dtype=inputs._data.dtype)
+        F = np.empty((2*nphase, ), dtype=inputs._data.dtype)
+        T_coil = np.empty((nr, ), dtype=inputs._data.dtype)
+        T_total = np.empty((ntime, ), dtype=inputs._data.dtype)
 
         # Integrate over time.
         for z in range(ntime):
@@ -271,7 +271,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                     x = np.array([xws_n, xws_n + xw])
 
                     # Analytically integrate the flux over x and y
-                    By = -Bterm * (np.sin(k*x[-1]) - np.sin(k*x[0])) * (sinh_ky[-1] - sinh_ky[0]) / k**2
+                    By = Bterm * (np.sin(k*x[-1]) - np.sin(k*x[0])) * (sinh_ky[-1] - sinh_ky[0]) / k**2
 
                     # Flux to Force
                     F[n] = J[n] * By * dr
@@ -286,7 +286,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                     B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
 
                 # Torque for each coil at radius r.
-                T_coil[q] = np.abs(r_q * np.sum(F))
+                T_coil[q] = (r_q * np.sum(F))
 
             # Torque from each radii.
             T_total[z] = np.sum(T_coil) * npole
@@ -324,6 +324,9 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
 
     This is tailored for use in an aircraft, so air properties come from freestream flight
     conditions.
+
+    This is an experimental component. Equations have been published, but it doesn't seem an
+    accurate model of the cooling.
     """
 
     def setup(self):
@@ -350,10 +353,10 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
         self.add_input('mu_air', val=1.7e-5, units='N*s/m**2',
                         desc='Dynamic viscosity for air.')
 
-        self.add_input('Cp_air', val=1005, units='J/(kg*degK)',
+        self.add_input('Cp_air', val=1.000, units='kJ/(kg*degK)',
                         desc='Specific heat capactity at constant pressure for air.')
 
-        self.add_input('k_air', val=2.4e-2, units='W/(m*degK)',
+        self.add_input('k_air', val=2.4e-5, units='kW/(m*degK)',
                        desc='Thermal conductivity of air.')
 
         self.add_input('T_air', val=272.0, units='degK',
@@ -387,9 +390,22 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
         k = inputs['k_air']
         coil_tk = inputs['coil_thickness']
 
+        # (kg/m**3) * (m/s) / (N*s/m**2)
+        # kg / (N * s**2)
+        # 1/m <-- Bad units for Re
+        # Seems to be assumption of unit length.
         Re = rho * V / mu
+
+        # (N*s/m**2) * kJ/(kg*degK) / kW/(m*degK)
+        # kg/(s*m) * kN*m/(kg*degK) * m*degK/(kN*m/s)
+        # units balance
         Pr = mu * Cp / k
-        Hconv = 0.644 * k * Pr**(1.0/3.0) * np.sqrt(Re)
+
+        if Pr < 0.6:
+            msg = "Warning: Prandtl number of %f is not within supported range (Pr > 0.6)" % Pr
+            raise RuntimeWarning(msg)
+
+        Hconv = 0.664 * k * Pr**(1.0/3.0) * np.sqrt(Re)
         T_stator = loss_stator / (np.sqrt(coil_tk) * 2.0 * pi * Hconv * r1) + T
 
         outputs['stator_temperature'] = T_stator
@@ -410,14 +426,14 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
 
         Pr = mu * Cp / k
         Re = rho * V / mu
-        Hconv = 0.644 * k * Pr**(1.0/3.0) * np.sqrt(Re)
+        Hconv = 0.664 * k * Pr**(1.0/3.0) * np.sqrt(Re)
 
-        dHconv_drho = 0.644 * k * Pr**(1.0/3.0) * 0.5 / np.sqrt(Re) * V / mu
-        dHconv_dmu = 0.644 * k * (Pr**(-2.0/3.0) / 3.0 * Cp / k * np.sqrt(Re) +
+        dHconv_drho = 0.664 * k * Pr**(1.0/3.0) * 0.5 / np.sqrt(Re) * V / mu
+        dHconv_dmu = 0.664 * k * (Pr**(-2.0/3.0) / 3.0 * Cp / k * np.sqrt(Re) +
                                   Pr**(1.0/3.0) * 0.5 / np.sqrt(Re) * (-rho * V / mu**2))
-        dHconv_dCp = 0.644 * k * Pr**(-2.0/3.0) / 3.0 * mu / k * np.sqrt(Re)
-        dHconv_dV = 0.644 * k * Pr**(1.0/3.0) * 0.5 / np.sqrt(Re) * rho / mu
-        dHconv_dk = 0.644 * np.sqrt(Re) * (Pr**(1.0/3.0) + k * Pr**(-2.0/3.0) / 3.0 * -mu * Cp / k**2)
+        dHconv_dCp = 0.664 * k * Pr**(-2.0/3.0) / 3.0 * mu / k * np.sqrt(Re)
+        dHconv_dV = 0.664 * k * Pr**(1.0/3.0) * 0.5 / np.sqrt(Re) * rho / mu
+        dHconv_dk = 0.664 * np.sqrt(Re) * (Pr**(1.0/3.0) + k * Pr**(-2.0/3.0) / 3.0 * -mu * Cp / k**2)
 
         denom = np.sqrt(coil_tk) * 2.0 * pi * Hconv * r1
 
