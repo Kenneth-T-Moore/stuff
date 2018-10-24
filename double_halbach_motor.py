@@ -38,8 +38,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         **kwargs : dict of keyword arguments
             Keyword arguments that will be mapped into the Component options.
         """
-        super(DoubleHalbachMotorComp, self).__init__()
-        self._kwargs = kwargs
+        super(DoubleHalbachMotorComp, self).__init__(**kwargs)
         self.cite = CITATION
 
         # Rotor Material and Physical Constant Parameters
@@ -112,7 +111,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.add_input('coil_thickness', val=.0066 , units='m',
                        desc='Coil Thickness.')
 
-        self.add_input('Imax', val=6.0 , units='A',
+        self.add_input('Ipeak', val=6.0 , units='A',
                        desc='Motor peak current.')
 
         self.add_input('resistivity', val=1.68e-8 , units='ohm*m',
@@ -154,7 +153,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         ym = inputs['magnet_depth']
         yw = inputs['coil_thickness']
         ag = inputs['air_gap']
-        Imax = inputs['Imax']
+        Ipeak = inputs['Ipeak']
         RPM = inputs['RPM']
         resistivity = inputs['resistivity']
 
@@ -226,16 +225,16 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             t_z = t[z]
 
             # Define Coil Currents in each coil direction
-            I = Imax * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
+            I = Ipeak * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
             I = np.append(I, -I)     # current moves in and out of plane
-            J = I / Awires      # Amps/m**2 Current Density
+            J = I / Awires           # Amps/m**2 Current Density
 
             # save peak current density in Amps/mm**2
-            self.current_density = Imax / Awires * .000001
+            self.current_density = Ipeak / Awires * .000001
 
             # Calculate resistance.
             phase_R = wire_length * resistivity / (A * cfill)
-            PR[z] = nphase * 0.5 * phase_R * np.sum(I**2)
+            PR[z] = nphase * 0.5 * phase_R * (Ipeak)**2
 
             # Integrate over radius (dr)
             for q in range(nr):
@@ -304,7 +303,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         efficiency = (P - PR - Pe) / P
 
         # Mass sum. (kg)
-        M = wire_length * Awires * self.rho_stator * nphase + M_magnet
+        M = wire_length * Awires * self.rho_stator * nphase * 2 + M_magnet
 
         # Power Density (converted to kW/kg)
         power_density = P/M * 0.001
