@@ -644,7 +644,6 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         partials['eddy_current_loss', 'RPM'] = dPe_drpm * .001
         partials['eddy_current_loss', 'resistivity'] = dPe_dresist * .001
 
-        efficiency = (P - PR - Pe) / P
         partials['efficiency', 'outer_radius'] = (dP_dRF - dPR_dRF - dPe_dRF) / P - (P - PR - Pe) * dP_dRF / P**2
         partials['efficiency', 'inner_radius'] = (dP_dR0 - dPR_dR0 - dPe_dR0) / P - (P - PR - Pe) * dP_dR0 / P**2
         partials['efficiency', 'magnet_depth'] = (dP_dym - dPe_dym) / P - (P - PR - Pe) * dP_dym / P**2
