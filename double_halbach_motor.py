@@ -12,16 +12,27 @@ import numpy as np
 
 from openmdao.api import ExplicitComponent, AnalysisError
 
-CITATION = """@PROCEEDINGS{
-              Duffy2016,
-              AUTHOR = "K. Duffy",
-              TITLE = "Optimizing Power Density and Efficiency of a Double-Halbach Array "
-                      "Permanent-Magnet Ironless Axial-Flux Motor",
-              BOOKTITLE = "52nd AIAA/SAE/ASEE Joint Propulsion Conference",
-              PUBLISHER = "AIAA",
-              YEAR = "2016",
-              MONTH = "JULY",
-              }"""
+CITATION1 = """@PROCEEDINGS{
+               Duffy2016,
+               AUTHOR = "K. Duffy",
+               TITLE = "Optimizing Power Density and Efficiency of a Double-Halbach Array "
+                       "Permanent-Magnet Ironless Axial-Flux Motor",
+               BOOKTITLE = "52nd AIAA/SAE/ASEE Joint Propulsion Conference",
+               PUBLISHER = "AIAA",
+               YEAR = "2016",
+               MONTH = "JULY",
+               }"""
+
+CITATION2 = """@PROCEEDINGS{
+               Tallerico2018,
+               AUTHOR = "T. Tallerico, J. Chin, Z. Cameron",
+               TITLE = "Optimization of an Air Core Dual Halbach Array Axial Flux Rim Drive for "
+                       "Electric Aircraft",
+               BOOKTITLE = "AIAA Aviation Forum",
+               PUBLISHER = "AIAA",
+               YEAR = "2018",
+               MONTH = "JUNE",
+               }"""
 
 
 class DoubleHalbachMotorComp(ExplicitComponent):
@@ -39,7 +50,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             Keyword arguments that will be mapped into the Component options.
         """
         super(DoubleHalbachMotorComp, self).__init__(**kwargs)
-        self.cite = CITATION
+        self.cite = CITATION1
 
         # Rotor Material and Physical Constant Parameters
         self.Br = 1.35             # Permanent magnet remanence flux (1T = 1N*m/Amp)
@@ -138,9 +149,18 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.add_output('efficiency',
                         desc='Total efficiency of the motor (accounting for all losses).')
 
+        self.add_output('rotor_mass', units='kg',
+                        desc='Mass of the rotor.')
+
+        self.add_output('stator_mass', units='kg',
+                        desc='Mass of the stator.')
+
         # Derivatives
         # -----------
-        self.declare_partials(of='*', wrt='*', method='fd')
+        self.declare_partials(of='rotor_mass', wrt=['inner_radius', 'outer_radius', 'magnet_depth', 'magnet_width'])
+        self.declare_partials(of='stator_mass', wrt=['inner_radius', 'outer_radius', 'coil_thickness'])
+        self.declare_partials(of=['power_ideal', 'power_density', 'resistive_loss', 'eddy_current_loss', 'efficiency'],
+                              wrt='*')
 
     def compute(self, inputs, outputs):
         """
@@ -169,6 +189,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
         ntime = self.ntime
         nr = self.nr
+
+        if RF <= R0:
+            msg = "Inner radius should be less than outer radius."
+            raise AnalysisError(msg)
 
         # Area of a single wire strand.
         Awire = pi*(rwire)**2  # Square volume taken up by 1 wire (m**2).
@@ -215,8 +239,13 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Magnet mass
         M_magnet = self.rho_mag * xm * ym * (RF - R0) * npole * nm * 2
 
-        PR = np.empty((ntime, ), dtype=inputs._data.dtype)
-        F = np.empty((2*nphase, ), dtype=inputs._data.dtype)
+        # save peak current density in Amps/mm**2
+        self.current_density = Ipeak / Awires * .000001
+
+        # Calculate resistance.
+        phase_R = wire_length * resistivity / (A * cfill)
+        PR = nphase * 0.5 * phase_R * (Ipeak)**2
+
         T_coil = np.empty((nr, ), dtype=inputs._data.dtype)
         T_total = np.empty((ntime, ), dtype=inputs._data.dtype)
 
@@ -229,51 +258,38 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             I = np.append(I, -I)     # current moves in and out of plane
             J = I / Awires           # Amps/m**2 Current Density
 
-            # save peak current density in Amps/mm**2
-            self.current_density = Ipeak / Awires * .000001
+            # Integrating over radius (dr) at all points simultaneously via vector operation.
 
-            # Calculate resistance.
-            phase_R = wire_length * resistivity / (A * cfill)
-            PR[z] = nphase * 0.5 * phase_R * (Ipeak)**2
+            # Adjust position of rotor relative to stator at given point in time.
+            x_adjust = omega * r * t_z
 
-            # Integrate over radius (dr)
+            # m length of one pole pair at radius.
+            xp = 2.0 * pi * r / npole
+
+            # Percent of material that is magnet in x direction.
+            e = (nm * xm) / xp
+
+            if e[0] > 1.0 + 1e-8:
+                msg = "Magnets are too large for the allotted space."
+                raise AnalysisError(msg)
+
             for q in range(nr):
                 r_q = r[q]
 
-                # Adjust position of rotor relative to stator at given point in time.
-                x_adjust = omega * r_q * t_z
-
-                # Define Halbach Array parameters.
-
-                # m length of one pole pair at radius.
-                xp = 2.0 * pi * r_q / npole
-
-                # Percent of material that is magnet in x direction.
-                e = (nm * xm) / xp
-                if e > 1.0 + 1e-8:
-                    msg = "Magnets are too large for the allotted space."
-                    raise AnalysisError(msg)
-
                 # Define Coil Currents and x start points.
-                xws = xws_norm * xp + x_adjust
+                xws = xws_norm * xp[q] + x_adjust[q]
 
                 # Intermediate terms for Flux calculation.
-                k = 2.0 * pi / xp
-                Bterm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e*pi/nm) * nm/pi
+                k = 2.0 * pi / xp[q]
+                Bterm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi
                 sinh_ky = np.sinh(k*y)
 
-                # Force is calculated one coil at a time.
-                for n in range(2*nphase):   # Current always symmetric about center
-                    xws_n = xws[n]
+                # Force is calculated for all coils, current always symmetric about center
+                # Analytically integrate the flux over x and y
+                By = Bterm * (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (sinh_ky[-1] - sinh_ky[0]) / k**2
 
-                    # x start and end values for current coil.
-                    x = np.array([xws_n, xws_n + xw])
-
-                    # Analytically integrate the flux over x and y
-                    By = Bterm * (np.sin(k*x[-1]) - np.sin(k*x[0])) * (sinh_ky[-1] - sinh_ky[0]) / k**2
-
-                    # Flux to Force
-                    F[n] = J[n] * By * dr
+                # Flux to Force
+                F = J * By * dr
 
                 # Estimate the flux squared for Eddy Loss calculation.
                 # Max flux occurs at
@@ -293,9 +309,6 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Power at Rpm. (W)
         P = np.sum(T_total) * omega / ntime
 
-        # Estimated resistive losses. (W)
-        PR = np.sum(PR) / ntime
-
         # Eddy loss calculcation. (W)
         vol_cond = 2.0 * (RF - R0) * Awires * nphase * npole
         Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
@@ -303,7 +316,8 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         efficiency = (P - PR - Pe) / P
 
         # Mass sum. (kg)
-        M = wire_length * Awires * self.rho_stator * nphase * 2 + M_magnet
+        M_stator = wire_length * Awires * self.rho_stator * nphase * 2
+        M = M_stator + M_magnet
 
         # Power Density (converted to kW/kg)
         power_density = P/M * 0.001
@@ -314,6 +328,218 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         outputs['resistive_loss'] = PR * 0.001
         outputs['eddy_current_loss'] = Pe * 0.001
         outputs['efficiency'] = efficiency
+        outputs['rotor_mass'] = M_magnet
+        outputs['stator_mass'] = M_stator
+
+    def compute_partials(self, inputs, partials):
+        R0 = inputs['inner_radius'][0]
+        RF = inputs['outer_radius'][0]
+        xm = inputs['magnet_width'][0]
+        ym = inputs['magnet_depth'][0]
+        yw = inputs['coil_thickness'][0]
+        ag = inputs['air_gap'][0]
+        Ipeak = inputs['Ipeak'][0]
+        RPM = inputs['RPM'][0]
+        resistivity = inputs['resistivity'][0]
+
+        nm = self.options['num_magnets']
+        npole = self.options['num_poles']
+        nphase = self.options['num_phases']
+        xws_norm = self.options['coil_locations']
+
+        minwall = self.minwall
+        cfill = self.cfill
+        Br = self.Br
+        rwire = self.rwire
+        rho_mag = self.rho_mag
+        rho_stator = self.rho_stator
+
+        ntime = self.ntime
+        nr = self.nr
+
+        # Back calculate from thickness of coil
+        yg = 0.5 * yw + ag
+        dyg_dyw = 0.5
+        dyg_dag = 1.0
+
+        # Area available for wire (I-beam area)
+        A = (2.0*R0*pi/(nphase*npole) - minwall) * yw * 0.5
+        dA_dR0 = 2.0 * pi / (nphase*npole) * yw * 0.5
+        dA_dyw = (2.0 * R0 * pi / (nphase*npole) - minwall) * 0.5
+
+        # Width of coil
+        xw = A / yw
+        dxw_dR0 = dA_dR0 / yw
+        dxw_dyw = dA_dyw / yw - A / yw**2
+
+        # Area of all wires in a single coil.
+        Awires = A * cfill
+        dAwires_dR0 = dA_dR0 * cfill
+        dAwires_dyw = dA_dyw * cfill
+
+        # Estimate Minimum Length of all Wire
+        if self.options['overlap']:
+            wire_length = 2.0*(RF-R0)*npole + pi*(RF + R0)
+            dwl_dRF = 2.0 * npole + pi
+            dwl_dR0 = -2.0 * npole + pi
+        else:
+            wire_length = 2.0*(RF-R0)*npole + 2.0*pi*(RF + R0)/nphase
+            dwl_dRF = 2.0 * npole + 2.0 * pi / nphase
+            dwl_dR0 = -2.0 * npole + 2.0 * pi / nphase
+
+        # Discretize in radial direction
+        dr = (RF - R0) / nr
+        r = R0 + 0.5*dr + dr*np.arange(nr)
+        dr_dRF = 0.5/nr + np.arange(nr)/nr
+        dr_dR0 = 1.0 - 0.5/nr - np.arange(nr)/nr
+
+        # Discretize in y: just need start and end
+        y = np.array([-yg + ag, yg - ag])
+        dy_yg = np.array([-dyg_dyw, dyg_dyw])
+        dy_ag = np.array([-dyg_dag + 1, dyg_dag - 1])
+
+        # Discretize in time
+        omega = RPM / 30. * pi
+        if ntime > 1:
+            t_end = 2.0 * pi / (npole * omega)
+            dt = t_end / (ntime-1)
+            t = dt*np.arange(ntime)
+        else:
+            t = np.array([0.0])
+            dt_drpm = 0.0
+
+        # Magnet mass
+        M_magnet = rho_mag * xm * ym * (RF - R0) * npole * nm * 2
+
+        # Calculate resistance.
+        phase_R = wire_length * resistivity / (A * cfill)
+        PR = nphase * 0.5 * phase_R * (Ipeak)**2
+
+        T_coil = np.empty((nr, ), dtype=inputs._data.dtype)
+        T_total = np.empty((ntime, ), dtype=inputs._data.dtype)
+
+        T_coil_dRF = 0
+
+        # Integrate over time.
+        for z in range(ntime):
+            t_z = t[z]
+
+            # Define Coil Currents in each coil direction
+            I = Ipeak * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
+            I = np.append(I, -I)
+            J = I / Awires
+            dJ_dR0 = -I / Awires * dAwires_dR0
+            dJ_dyw = -I / Awires * dAwires_dyw
+
+            # Adjust position of rotor relative to stator at given point in time.
+            x_adjust = omega * r * t_z
+            dxadj_dRF = omega * dr_dRF * t_z
+            dxadj_dR0 = omega * dr_dR0 * t_z
+
+            # m length of one pole pair at radius.
+            xp = 2.0 * pi * r / npole
+            dxp_dRF = dr_dRF * 2.0 * pi / npole
+            dxp_dR0 = dr_dR0 * 2.0 * pi / npole
+
+            # Percent of material that is magnet in x direction.
+            e = (nm * xm) / xp
+            de_dRF = -(nm * xm) / xp**2 * dxp_dRF
+            de_dR0 = -(nm * xm) / xp**2 * dxp_dR0
+            de_dxm = nm / xp
+
+            for q in range(nr):
+                r_q = r[q]
+
+                # Define Coil Currents and x start points.
+                xws = xws_norm * xp[q] + x_adjust[q]
+                dxws_dRF = xws_norm * dxp_dRF[q] + x_adjust[q] * dxadj_dRF[q]
+                dxws_dR0 = xws_norm * dxp_dR0[q] + x_adjust[q] * dxadj_dR0[q]
+
+                k = 2.0 * pi / xp[q]
+                dk_dRF = -2.0 * pi / xp[q]**2 * dxp_dRF[q]
+                dk_dR0 = -2.0 * pi / xp[q]**2 * dxp_dR0[q]
+
+                Bterm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi
+                dBt_dRF = 2.0 * Br * (-yg) * dk_dRF * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi + \
+                          2.0 * Br * np.exp(-k*yg) * ym * dk_dRF * np.exp(-k*ym) * np.sin(e[q]*pi/nm) * nm/pi  + \
+                          2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.cos(e[q]*pi/nm) * de_dRF[q]
+                dBt_dR0 = 2.0 * Br * (-yg) * dk_dR0 * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi + \
+                          2.0 * Br * np.exp(-k*yg) * ym * dk_dR0 * np.exp(-k*ym) * np.sin(e[q]*pi/nm) * nm/pi  + \
+                          2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.cos(e[q]*pi/nm) * de_dR0[q]
+                dBt_dyw = 2.0 * Br * (-k) * dyg_dyw * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi
+                dBt_dag = 2.0 * Br * (-k) * dyg_dag * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.sin(e[q]*pi/nm) * nm/pi
+                dBt_dym = 2.0 * Br * np.exp(-k*yg) * k * np.exp(-k*ym) * np.sin(e[q]*pi/nm) * nm/pi
+                dBt_dxm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.cos(e[q]*pi/nm) * de_dxm[q]
+
+                sinh_ky = np.sinh(k*y)
+                dsnh_dyg = np.cosh(k*y) * k * dy_yg
+                dsnh_dag = np.cosh(k*y) * k * dy_ag
+                dsnh_dRF = np.cosh(k*y) * y * dk_dRF
+                dsnh_dR0 = np.cosh(k*y) * y * dk_dR0
+
+                # Force is calculated for all coils, current always symmetric about center
+                fact1 = (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (sinh_ky[-1] - sinh_ky[0]) / k**2
+                By = Bterm * fact1
+                dBy_dRF = dBt_dRF * fact1 + Bterm * (
+                          (np.cos(k*(xws+xw)) * (xws+xw) - np.cos(k*xws) * xws) * dk_dRF * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                          (np.cos(k*(xws+xw)) - np.cos(k*xws)) * k * dxws_dRF * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                          (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (dsnh_dRF[-1] - dsnh_dRF[0]) / k**2  + \
+                          (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (sinh_ky[-1] - sinh_ky[0]) * -2.0 / k**3 * dk_dRF
+                )
+                dBy_dR0 = dBt_dR0 * fact1 + Bterm * (
+                          (np.cos(k*(xws+xw)) * (xws+xw) - np.cos(k*xws) * xws) * dk_dR0 * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                          (np.cos(k*(xws+xw)) - np.cos(k*xws)) * k * dxws_dR0 * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                          (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (dsnh_dR0[-1] - dsnh_dR0[0]) / k**2 + \
+                          (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (sinh_ky[-1] - sinh_ky[0]) * -2.0 / k**3 * dk_dR0
+                )
+                dBy_dyw = dBt_dyw * fact1
+                dBy_dag = dBt_dag * fact1
+                dBy_dym = dBt_dym * fact1
+                dBy_dxm = dBt_dxm * fact1
+
+                # Flux to Force
+                F = J * By * dr
+                dF_dRF = J * dBy_dRF * dr + J * By
+                dF_dR0 = (J * dBy_dR0 + dJ_dR0 * By) * dr - J * By
+
+                if q == 0:
+                    B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
+
+                # Torque for each coil at radius r.
+                T_coil[q] = (r_q * np.sum(F))
+                T_coil_dRF += r_q * np.sum(dF_dRF) + dr_dRF[q] * np.sum(F)
+
+            # Torque from each radii.
+            T_total[z] = np.sum(T_coil) * npole
+
+        # Power at Rpm. (W)
+        P = np.sum(T_total) * omega / ntime
+        dP_dRF = T_coil_dRF * npole * omega / ntime
+
+        # Eddy loss calculcation. (W)
+        vol_cond = 2.0 * (RF - R0) * Awires * nphase * npole
+        Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
+
+        efficiency = (P - PR - Pe) / P
+
+        # Mass sum. (kg)
+        M_stator = wire_length * Awires * self.rho_stator * nphase * 2
+        M = M_stator + M_magnet
+
+        # Power Density (converted to kW/kg)
+        power_density = P/M * 0.001
+
+        partials['power_ideal', 'outer_radius'] = dP_dRF * .001
+
+        partials['rotor_mass', 'outer_radius'] = rho_mag * xm * ym * npole * nm * 2
+        partials['rotor_mass', 'inner_radius'] = -rho_mag * xm * ym * npole * nm * 2
+        partials['rotor_mass', 'magnet_depth'] = rho_mag * xm * (RF - R0) * npole * nm * 2
+        partials['rotor_mass', 'magnet_width'] = rho_mag * ym * (RF - R0) * npole * nm * 2
+
+        partials['stator_mass', 'outer_radius'] = dwl_dRF * Awires * rho_stator * nphase * 2
+        partials['stator_mass', 'inner_radius'] = (dwl_dR0 * Awires + wire_length * dA_dR0 * cfill) * rho_stator * nphase * 2
+        partials['stator_mass', 'coil_thickness'] = wire_length * dA_dyw * cfill * rho_stator * nphase * 2
+
 
 
 class DoubleHalbachMotorThermalComp(ExplicitComponent):
@@ -321,12 +547,23 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
     Component that models the thermal properties of the Halbach Array motor, computing the stator
     temperature and the coil resistivity assuming a copper conductor.
 
-    This is tailored for use in an aircraft, so air properties come from freestream flight
-    conditions.
+    The thermal equations come from convective flow over a flat plate.
 
-    This is an experimental component. Equations have been published, but it doesn't seem an
-    accurate model of the cooling.
+    This is an experimental component. Equations have been published, but the application is for a
+    specific configuration of motor. For the X57, this would not be an adequate method of cooling.
     """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize attributes.
+
+        Parameters
+        ----------
+        **kwargs : dict of keyword arguments
+            Keyword arguments that will be mapped into the Component options.
+        """
+        super(DoubleHalbachMotorThermalComp, self).__init__(**kwargs)
+        self.cite = CITATION2
 
     def setup(self):
         """
@@ -362,7 +599,7 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
                        desc='Temperature for air.')
 
         self.add_input('V_air', val=70.0, units='m/s',
-                        desc='Velocity of aircraft.')
+                        desc='Velocity of air.')
 
         # Outputs
         self.add_output('stator_temperature', units='degK',
@@ -455,6 +692,221 @@ class DoubleHalbachMotorThermalComp(ExplicitComponent):
         for wrt in wrts:
             partials['resistivity', wrt] = 1.75e-8 * 3.81e-3 * partials['stator_temperature', wrt]
 
+
+class BearingLosses(ExplicitComponent):
+    """
+    Component that models the bearing losses for the motor used to power a propulsor.
+
+    Can be optionally used for "high lift" configuration by setting the option.
+
+    Requires the net thrust produced by the motor/fan combination.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize attributes.
+
+        Parameters
+        ----------
+        **kwargs : dict of keyword arguments
+            Keyword arguments that will be mapped into the Component options.
+        """
+        super(BearingLosses, self).__init__(**kwargs)
+        self.cite = CITATION2
+
+    def initialize(self):
+        """
+        Declare options accessable via the self.options dictionary.
+        """
+        self.options.declare('high_lift', False,
+                             desc='Set to True to when used to provide lift.')
+
+        self.options.declare('mu', .0024,
+                             desc='Friction Coefficient.')
+
+        self.options.declare('bore', .025,
+                             desc='Bearing bore diameter. (units m)')
+
+    def setup(self):
+        """
+        Declare input and output for this component, and declare derivatives.
+        """
+
+        # Inputs
+        self.add_input('net_thrust', val=0.0, units='N',
+                       desc='Net axial force on shaft.')
+
+        self.add_input('RPM', val=8600., units='rpm',
+                       desc='Motor rotational speed.')
+
+        self.add_input('rotor_mass', val=6.0, units='kg',
+                       desc='Mass of the rotor.')
+
+        self.add_input('fan_mass', val=7.7, units='kg',
+                       desc='Mass of the fan.')
+
+        # Outputs
+        self.add_output('bearing_loss', units='kW',
+                        desc='Losses due to bearings.')
+
+        # Derivatives
+        # -----------
+        self.declare_partials(of='*', wrt='*')
+
+        self.g = 9.81
+
+    def compute(self, inputs, outputs):
+        """
+        Compute thermal properties.
+        """
+        options = self.options
+
+        if options['high_lift']:
+            force = inputs['net_thrust'] + self.g * (inputs['rotor_mass'] + inputs['fan_mass'])
+        else:
+            force = inputs['net_thrust']
+
+        w = inputs['RPM'] * pi / 30.0
+
+        # Convert from W to KW
+        outputs['bearing_loss'] = 0.5 * options['mu'] * options['bore'] * force * w * .001
+
+    def compute_partials(self, inputs, partials):
+        options = self.options
+
+        bore = options['bore']
+        mu = options['mu']
+
+        if options['high_lift']:
+            m_rotor = inputs['rotor_mass']
+            m_fan = inputs['fan_mass']
+
+            g = self.g
+            force = inputs['net_thrust'] + g * (m_rotor + m_fan)
+        else:
+            force = inputs['net_thrust']
+
+        w = inputs['RPM'] * pi / 30.0
+
+        partials['bearing_loss', 'RPM'] = 0.5 * mu * bore * force * pi / 30.0 * .001
+        partials['bearing_loss', 'net_thrust'] = 0.5 * mu * bore * w * .001
+
+        if options['high_lift']:
+            partials['bearing_loss', 'rotor_mass'] = 0.5 * mu * bore * w * g * .001
+            partials['bearing_loss', 'fan_mass'] = 0.5 * mu * bore * w * g * .001
+
+
+class WindageLosses(ExplicitComponent):
+    """
+    Component that models the windage losses for the motor in rim drive configuration.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize attributes.
+
+        Parameters
+        ----------
+        **kwargs : dict of keyword arguments
+            Keyword arguments that will be mapped into the Component options.
+        """
+        super(WindageLosses, self).__init__(**kwargs)
+        self.cite = CITATION2
+
+    def setup(self):
+        """
+        Declare input and output for this component, and declare derivatives.
+        """
+
+        # Inputs
+        self.add_input('RPM', val=8600., units='rpm',
+                       desc='Motor rotational speed.')
+
+        self.add_input('inner_radius', val=6.125 * 0.0254, units='m',
+                           desc='Rotor inner radius.')
+
+        self.add_input('outer_radius', val=6.875 * 0.0254, units='m',
+                           desc='Rotor outer radius.')
+
+        self.add_input('rho_air', val=1.0, units='kg/m**3',
+                        desc='Density for air.')
+
+        self.add_input('mu_air', val=1.7e-5, units='N*s/m**2',
+                        desc='Dynamic viscosity for air.')
+
+        self.add_input('air_gap', .001, units='m',
+                       desc = 'Air gap between rotor and stator.')
+
+        self.add_input('hoop_thickness', .001, units='m',
+                       desc='Thickness of carbon fiber restraining hoop.')
+
+        # Outputs
+        self.add_output('windage_loss', units='kW',
+                        desc='Losses due to bearings.')
+
+        # Derivatives
+        # -----------
+        self.declare_partials(of='*', wrt='*')
+
+    def compute(self, inputs, outputs):
+        """
+        Compute thermal properties.
+        """
+        R0 = inputs['inner_radius']
+        RF = inputs['outer_radius']
+        rho = inputs['rho_air']
+        mu = inputs['mu_air']
+        ag = inputs['air_gap']
+        tk = inputs['hoop_thickness']
+
+        w = inputs['RPM'] * pi / 30.0
+
+        RFW = RF + tk
+        Re = rho * w * RFW**2 / mu
+        Cf = .08 / ((ag/R0)**.167 * Re**.25)
+
+        # Convert from W to KW
+        outputs['windage_loss'] = 0.5 * Cf * rho * w**3 * (RFW**5 - R0**5) * .001
+
+    def compute_partials(self, inputs, partials):
+        R0 = inputs['inner_radius']
+        RF = inputs['outer_radius']
+        rho = inputs['rho_air']
+        mu = inputs['mu_air']
+        ag = inputs['air_gap']
+        tk = inputs['hoop_thickness']
+
+        w = inputs['RPM'] * pi / 30.0
+
+        RFW = RF + tk
+        Re = rho * w * RFW**2 / mu
+        Cf = .08 / ((ag/R0)**.167 * Re**.25)
+
+        r5term = (RFW**5 - R0**5)
+
+        dCf_dRe = -.25 * .08 / ((ag/R0)**.167 * Re**1.25)
+
+        dCf_dag = -.167 * .08 / ((ag/R0)**1.167 * Re**.25 * R0)
+        partials['windage_loss', 'air_gap'] = 0.5 * dCf_dag * rho * w**3 * r5term * .001
+
+        dCf_drho = dCf_dRe * w * RFW**2 / mu
+        partials['windage_loss', 'rho_air'] = 0.5 * w**3 * r5term * .001 * (dCf_drho * rho + Cf)
+
+        dCf_dmu = dCf_dRe * (-rho * w * RFW**2 / mu**2)
+        partials['windage_loss', 'mu_air'] = 0.5 * dCf_dmu * rho * w**3 * r5term * .001
+
+        dCf_dtk = dCf_dRe * (2.0 * rho * w * RFW / mu)
+        partials['windage_loss', 'hoop_thickness'] = 0.5 * rho * w**3  * .001 * (dCf_dtk * r5term +
+                                                                                 Cf * 5.0 * RFW**4)
+
+        partials['windage_loss', 'outer_radius'] = partials['windage_loss', 'hoop_thickness']
+
+        dCf_dR0 = .167 * .08 * ag / ((ag/R0)**1.167 * Re**.25 * R0**2)
+        partials['windage_loss', 'inner_radius'] = 0.5 * rho * w**3  * .001 * (dCf_dR0 * r5term -
+                                                                               Cf * 5.0 * R0**4)
+        dCf_dw = dCf_dRe * (rho * RFW**2 / mu)
+        partials['windage_loss', 'RPM'] = 0.5 * rho * r5term * .001 * pi / 30.0 * (dCf_dw * w**3 +
+                                                                                   Cf * 3.0 * w**2)
 
 if __name__ == "__main__":
 
