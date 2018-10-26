@@ -499,8 +499,8 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
                 # Flux to Force
                 F = J * By * dr
-                dF_dRF = J * dBy_dRF * dr + J * By
-                dF_dR0 = (J * dBy_dR0 + dJ_dR0 * By) * dr - J * By
+                dF_dRF = J * dBy_dRF * dr + J * By / nr
+                dF_dR0 = (J * dBy_dR0 + dJ_dR0 * By) * dr - J * By / nr
 
                 if q == 0:
                     B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
