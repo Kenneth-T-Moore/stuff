@@ -37,7 +37,7 @@ class TestHalbachMotor(unittest.TestCase):
 
         prob.setup(force_alloc_complex=True)
 
-        comp.ntime = 3
+        comp.ntime = 1
         comp.nr = 4
 
         prob['comp.magnet_width'] = .0042
@@ -47,7 +47,7 @@ class TestHalbachMotor(unittest.TestCase):
 
         J = prob.check_partials(method='cs', compact_print=True)
 
-        assert_check_partials(J, atol=1e-7, rtol=1e-7)
+        assert_check_partials(J, atol=1e-6, rtol=1e-7)
 
     def test_bearing_loss_derivatives(self):
         prob = Problem()

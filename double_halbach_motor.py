@@ -159,7 +159,8 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # -----------
         self.declare_partials(of='rotor_mass', wrt=['inner_radius', 'outer_radius', 'magnet_depth', 'magnet_width'])
         self.declare_partials(of='stator_mass', wrt=['inner_radius', 'outer_radius', 'coil_thickness'])
-        self.declare_partials(of=['power_ideal', 'power_density', 'resistive_loss', 'eddy_current_loss', 'efficiency'],
+        self.declare_partials(of='resistive_loss', wrt=['Ipeak', 'coil_thickness', 'inner_radius', 'outer_radius', 'resistivity'])
+        self.declare_partials(of=['power_ideal', 'power_density', 'eddy_current_loss', 'efficiency'],
                               wrt='*')
 
     def compute(self, inputs, outputs):
@@ -395,30 +396,48 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
         # Discretize in y: just need start and end
         y = np.array([-yg + ag, yg - ag])
-        dy_yg = np.array([-dyg_dyw, dyg_dyw])
+        dy_yw = np.array([-dyg_dyw, dyg_dyw])
         dy_ag = np.array([-dyg_dag + 1, dyg_dag - 1])
 
         # Discretize in time
         omega = RPM / 30. * pi
+        domega_drpm = pi / 30.0
         if ntime > 1:
             t_end = 2.0 * pi / (npole * omega)
             dt = t_end / (ntime-1)
             t = dt*np.arange(ntime)
+            dt_drpm = -2.0 * pi * domega_drpm * np.arange(ntime) / (npole * (ntime-1) * omega**2)
         else:
             t = np.array([0.0])
-            dt_drpm = 0.0
+            dt_drpm = np.array([0.0])
 
         # Magnet mass
         M_magnet = rho_mag * xm * ym * (RF - R0) * npole * nm * 2
+        dMmag_dRF = rho_mag * xm * ym * npole * nm * 2
+        dMmag_dR0 = -rho_mag * xm * ym * npole * nm * 2
+        dMmag_dym = rho_mag * xm * (RF - R0) * npole * nm * 2
+        dMmag_dxm = rho_mag * ym * (RF - R0) * npole * nm * 2
 
         # Calculate resistance.
         phase_R = wire_length * resistivity / (A * cfill)
         PR = nphase * 0.5 * phase_R * (Ipeak)**2
+        dPR_dIpk = nphase * phase_R * Ipeak
+        dPR_dRF = nphase * 0.5 * (Ipeak)**2 * dwl_dRF * resistivity / (A * cfill)
+        dPR_dR0 = nphase * 0.5 * (Ipeak)**2 * resistivity * (dwl_dR0 / (A * cfill) - wire_length * dA_dR0 / (cfill * A**2))
+        dPR_dyw = -nphase * 0.5 * (Ipeak)**2 * wire_length * resistivity * dA_dyw / (cfill * A**2)
+        dPR_dresist = nphase * 0.5* (Ipeak)**2 * wire_length / (A * cfill)
 
         T_coil = np.empty((nr, ), dtype=inputs._data.dtype)
         T_total = np.empty((ntime, ), dtype=inputs._data.dtype)
 
         T_coil_dRF = 0
+        T_coil_dR0 = 0
+        T_coil_dym = 0
+        T_coil_dxm = 0
+        T_coil_dyw = 0
+        T_coil_dag = 0
+        T_coil_dIpk = 0
+        T_coil_drpm = 0
 
         # Integrate over time.
         for z in range(ntime):
@@ -428,13 +447,18 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             I = Ipeak * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
             I = np.append(I, -I)
             J = I / Awires
-            dJ_dR0 = -I / Awires * dAwires_dR0
-            dJ_dyw = -I / Awires * dAwires_dyw
+            dJ_dR0 = -I / Awires**2 * dAwires_dR0
+            dJ_dyw = -I / Awires**2 * dAwires_dyw
+            dJ_dIpk = J / Ipeak
+            dJ_drpm = -Ipeak * np.sin(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase)) * \
+                      npole * (t_z * domega_drpm + omega * dt_drpm) / Awires
+            dJ_drpm = np.append(dJ_drpm, -dJ_drpm)
 
             # Adjust position of rotor relative to stator at given point in time.
             x_adjust = omega * r * t_z
             dxadj_dRF = omega * dr_dRF * t_z
             dxadj_dR0 = omega * dr_dR0 * t_z
+            dxadj_drpm = r * (domega_drpm * t_z + omega * dt_drpm[z])
 
             # m length of one pole pair at radius.
             xp = 2.0 * pi * r / npole
@@ -452,8 +476,9 @@ class DoubleHalbachMotorComp(ExplicitComponent):
 
                 # Define Coil Currents and x start points.
                 xws = xws_norm * xp[q] + x_adjust[q]
-                dxws_dRF = xws_norm * dxp_dRF[q] + x_adjust[q] * dxadj_dRF[q]
-                dxws_dR0 = xws_norm * dxp_dR0[q] + x_adjust[q] * dxadj_dR0[q]
+                dxws_dRF = xws_norm * dxp_dRF[q] + dxadj_dRF[q]
+                dxws_dR0 = xws_norm * dxp_dR0[q] + dxadj_dR0[q]
+                dxws_drpm = dxadj_drpm[q]
 
                 k = 2.0 * pi / xp[q]
                 dk_dRF = -2.0 * pi / xp[q]**2 * dxp_dRF[q]
@@ -472,7 +497,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 dBt_dxm = 2.0 * Br * np.exp(-k*yg) * (1.0 - np.exp(-k*ym)) * np.cos(e[q]*pi/nm) * de_dxm[q]
 
                 sinh_ky = np.sinh(k*y)
-                dsnh_dyg = np.cosh(k*y) * k * dy_yg
+                dsnh_dyw = np.cosh(k*y) * k * dy_yw
                 dsnh_dag = np.cosh(k*y) * k * dy_ag
                 dsnh_dRF = np.cosh(k*y) * y * dk_dRF
                 dsnh_dR0 = np.cosh(k*y) * y * dk_dR0
@@ -488,26 +513,56 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 )
                 dBy_dR0 = dBt_dR0 * fact1 + Bterm * (
                           (np.cos(k*(xws+xw)) * (xws+xw) - np.cos(k*xws) * xws) * dk_dR0 * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
-                          (np.cos(k*(xws+xw)) - np.cos(k*xws)) * k * dxws_dR0 * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                          (np.cos(k*(xws+xw)) * (dxws_dR0 + dxw_dR0) - np.cos(k*xws) * dxws_dR0) * k * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
                           (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (dsnh_dR0[-1] - dsnh_dR0[0]) / k**2 + \
                           (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (sinh_ky[-1] - sinh_ky[0]) * -2.0 / k**3 * dk_dR0
                 )
-                dBy_dyw = dBt_dyw * fact1
-                dBy_dag = dBt_dag * fact1
+                dBy_dyw = dBt_dyw * fact1 + Bterm * (
+                    np.cos(k*(xws+xw)) * dxw_dyw * k * (sinh_ky[-1] - sinh_ky[0]) / k**2 + \
+                    (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (dsnh_dyw[-1] - dsnh_dyw[0]) / k**2
+                )
+                dBy_dag = dBt_dag * fact1 + Bterm * (
+                    (np.sin(k*(xws+xw)) - np.sin(k*xws)) * (dsnh_dag[-1] - dsnh_dag[0]) / k**2
+                )
                 dBy_dym = dBt_dym * fact1
                 dBy_dxm = dBt_dxm * fact1
+                dBy_drpm = Bterm * (np.cos(k*(xws+xw)) - np.cos(k*xws)) * k * dxws_drpm * (sinh_ky[-1] - sinh_ky[0]) / k**2
+
 
                 # Flux to Force
                 F = J * By * dr
                 dF_dRF = J * dBy_dRF * dr + J * By / nr
                 dF_dR0 = (J * dBy_dR0 + dJ_dR0 * By) * dr - J * By / nr
+                dF_dym = J * dr * dBy_dym
+                dF_dxm = J * dr * dBy_dxm
+                dF_dyw = (J * dBy_dyw + dJ_dyw * By) * dr
+                dF_dag = J * dr * dBy_dag
+                dF_dIpk = dJ_dIpk * By * dr
+                dF_drpm = (J * dBy_drpm + dJ_drpm * By) * dr
 
                 if q == 0:
                     B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
+                    Dbsqmax_dRF = 2.0 * Bterm * dBt_dRF * np.cosh(2.0 * k * y[0]) + \
+                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * y[0] * dk_dRF
+                    Dbsqmax_dR0 = 2.0 * Bterm * dBt_dR0 * np.cosh(2.0 * k * y[0]) + \
+                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * y[0] * dk_dR0
+                    Dbsqmax_dyw = 2.0 * Bterm * dBt_dyw * np.cosh(2.0 * k * y[0]) + \
+                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * k * dy_yw[0]
+                    Dbsqmax_dag = 2.0 * Bterm * dBt_dag * np.cosh(2.0 * k * y[0]) + \
+                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * k * dy_ag[0]
+                    Dbsqmax_dym = 2.0 * Bterm * dBt_dym * np.cosh(2.0 * k * y[0])
+                    Dbsqmax_dxm = 2.0 * Bterm * dBt_dxm * np.cosh(2.0 * k * y[0])
 
                 # Torque for each coil at radius r.
                 T_coil[q] = (r_q * np.sum(F))
                 T_coil_dRF += r_q * np.sum(dF_dRF) + dr_dRF[q] * np.sum(F)
+                T_coil_dR0 += r_q * np.sum(dF_dR0) + dr_dR0[q] * np.sum(F)
+                T_coil_dym += r_q * np.sum(dF_dym)
+                T_coil_dxm += r_q * np.sum(dF_dxm)
+                T_coil_dyw += r_q * np.sum(dF_dyw)
+                T_coil_dag += r_q * np.sum(dF_dag)
+                T_coil_dIpk += r_q * np.sum(dF_dIpk)
+                T_coil_drpm += r_q * np.sum(dF_drpm)
 
             # Torque from each radii.
             T_total[z] = np.sum(T_coil) * npole
@@ -515,31 +570,90 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Power at Rpm. (W)
         P = np.sum(T_total) * omega / ntime
         dP_dRF = T_coil_dRF * npole * omega / ntime
+        dP_dR0 = T_coil_dR0 * npole * omega / ntime
+        dP_dym = T_coil_dym * npole * omega / ntime
+        dP_dxm = T_coil_dxm * npole * omega / ntime
+        dP_dyw = T_coil_dyw * npole * omega / ntime
+        dP_dag = T_coil_dag * npole * omega / ntime
+        dP_dIpk = T_coil_dIpk * npole * omega / ntime
+        dP_drpm = (T_coil_drpm * omega + np.sum(T_total) * domega_drpm) / ntime
 
         # Eddy loss calculcation. (W)
         vol_cond = 2.0 * (RF - R0) * Awires * nphase * npole
-        Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
-
-        efficiency = (P - PR - Pe) / P
+        fact = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2
+        Pe = fact * vol_cond / resistivity * B_sq_max_est
+        dPe_dRF = fact / resistivity * (vol_cond * Dbsqmax_dRF + \
+                                        2.0 * Awires * nphase * npole * B_sq_max_est)
+        dPe_dR0 = fact / resistivity * (vol_cond * Dbsqmax_dR0 + \
+                                        (-Awires + (RF - R0) * dAwires_dR0) * 2.0 * nphase * npole * B_sq_max_est)
+        dPe_dyw = fact / resistivity * (vol_cond * Dbsqmax_dyw + \
+                                        (RF - R0) * dAwires_dyw * 2.0 * nphase * npole * B_sq_max_est)
+        dPe_dag = fact * vol_cond / resistivity * Dbsqmax_dag
+        dPe_dym = fact * vol_cond / resistivity * Dbsqmax_dym
+        dPe_dxm = fact * vol_cond / resistivity * Dbsqmax_dxm
+        dPe_dresist = - fact * vol_cond * B_sq_max_est / resistivity**2
+        dPe_drpm = (np.pi * npole * rwire / 30.0)**2 * RPM * B_sq_max_est * vol_cond / resistivity
 
         # Mass sum. (kg)
         M_stator = wire_length * Awires * self.rho_stator * nphase * 2
+        dMstat_dRF = dwl_dRF * Awires * rho_stator * nphase * 2
+        dMstat_dR0 = (dwl_dR0 * Awires + wire_length * dA_dR0 * cfill) * rho_stator * nphase * 2
+        dMstat_dyw = wire_length * dA_dyw * cfill * rho_stator * nphase * 2
+
         M = M_stator + M_magnet
 
-        # Power Density (converted to kW/kg)
-        power_density = P/M * 0.001
-
         partials['power_ideal', 'outer_radius'] = dP_dRF * .001
+        partials['power_ideal', 'inner_radius'] = dP_dR0 * .001
+        partials['power_ideal', 'magnet_depth'] = dP_dym * .001
+        partials['power_ideal', 'magnet_width'] = dP_dxm * .001
+        partials['power_ideal', 'coil_thickness'] = dP_dyw * .001
+        partials['power_ideal', 'air_gap'] = dP_dag * .001
+        partials['power_ideal', 'Ipeak'] = dP_dIpk * .001
+        partials['power_ideal', 'RPM'] = dP_drpm * .001
 
-        partials['rotor_mass', 'outer_radius'] = rho_mag * xm * ym * npole * nm * 2
-        partials['rotor_mass', 'inner_radius'] = -rho_mag * xm * ym * npole * nm * 2
-        partials['rotor_mass', 'magnet_depth'] = rho_mag * xm * (RF - R0) * npole * nm * 2
-        partials['rotor_mass', 'magnet_width'] = rho_mag * ym * (RF - R0) * npole * nm * 2
+        partials['rotor_mass', 'outer_radius'] = dMmag_dRF
+        partials['rotor_mass', 'inner_radius'] = dMmag_dR0
+        partials['rotor_mass', 'magnet_depth'] = dMmag_dym
+        partials['rotor_mass', 'magnet_width'] = dMmag_dxm
 
-        partials['stator_mass', 'outer_radius'] = dwl_dRF * Awires * rho_stator * nphase * 2
-        partials['stator_mass', 'inner_radius'] = (dwl_dR0 * Awires + wire_length * dA_dR0 * cfill) * rho_stator * nphase * 2
-        partials['stator_mass', 'coil_thickness'] = wire_length * dA_dyw * cfill * rho_stator * nphase * 2
+        partials['stator_mass', 'outer_radius'] = dMstat_dRF
+        partials['stator_mass', 'inner_radius'] = dMstat_dR0
+        partials['stator_mass', 'coil_thickness'] = dMstat_dyw
 
+        partials['power_density', 'outer_radius'] = (dP_dRF/M - P/M**2 * (dMmag_dRF + dMstat_dRF)) * .001
+        partials['power_density', 'inner_radius'] = (dP_dR0/M - P/M**2 * (dMmag_dR0 + dMstat_dR0)) * .001
+        partials['power_density', 'magnet_depth'] = (dP_dym/M - P/M**2 * dMmag_dym) * .001
+        partials['power_density', 'magnet_width'] = (dP_dxm/M - P/M**2 * dMmag_dxm) * .001
+        partials['power_density', 'coil_thickness'] = (dP_dyw/M - P/M**2 * dMstat_dyw) * .001
+        partials['power_density', 'air_gap'] = dP_dag/M * .001
+        partials['power_density', 'Ipeak'] = dP_dIpk/M * .001
+        partials['power_density', 'RPM'] = dP_drpm/M * .001
+
+        partials['resistive_loss', 'Ipeak'] = dPR_dIpk * .001
+        partials['resistive_loss', 'outer_radius'] = dPR_dRF * .001
+        partials['resistive_loss', 'inner_radius'] = dPR_dR0 * .001
+        partials['resistive_loss', 'coil_thickness'] = dPR_dyw * .001
+        partials['resistive_loss', 'resistivity'] = dPR_dresist * .001
+
+        partials['eddy_current_loss', 'outer_radius'] = dPe_dRF * .001
+        partials['eddy_current_loss', 'inner_radius'] = dPe_dR0 * .001
+        partials['eddy_current_loss', 'magnet_depth'] = dPe_dym * .001
+        partials['eddy_current_loss', 'magnet_width'] = dPe_dxm * .001
+        partials['eddy_current_loss', 'coil_thickness'] = dPe_dyw * .001
+        partials['eddy_current_loss', 'air_gap'] = dPe_dag * .001
+        partials['eddy_current_loss', 'RPM'] = dPe_drpm * .001
+        partials['eddy_current_loss', 'resistivity'] = dPe_dresist * .001
+
+        efficiency = (P - PR - Pe) / P
+        partials['efficiency', 'outer_radius'] = (dP_dRF - dPR_dRF - dPe_dRF) / P - (P - PR - Pe) * dP_dRF / P**2
+        partials['efficiency', 'inner_radius'] = (dP_dR0 - dPR_dR0 - dPe_dR0) / P - (P - PR - Pe) * dP_dR0 / P**2
+        partials['efficiency', 'magnet_depth'] = (dP_dym - dPe_dym) / P - (P - PR - Pe) * dP_dym / P**2
+        partials['efficiency', 'magnet_width'] = (dP_dxm - dPe_dxm) / P - (P - PR - Pe) * dP_dxm / P**2
+        partials['efficiency', 'coil_thickness'] = (dP_dyw - dPR_dyw - dPe_dyw) / P - (P - PR - Pe) * dP_dyw / P**2
+        partials['efficiency', 'air_gap'] = (dP_dag - dPe_dag) / P - (P - PR - Pe) * dP_dag / P**2
+        partials['efficiency', 'Ipeak'] = (dP_dIpk  - dPR_dIpk )/ P - (P - PR - Pe) * dP_dIpk / P**2
+        partials['efficiency', 'RPM'] = (dP_drpm - dPe_drpm) / P - (P - PR - Pe) * dP_drpm / P**2
+        partials['efficiency', 'resistivity'] = (-dPR_dresist - dPe_dresist) / P
 
 
 class DoubleHalbachMotorThermalComp(ExplicitComponent):
