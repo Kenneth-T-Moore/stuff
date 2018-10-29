@@ -293,13 +293,17 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 F = J * By * dr
 
                 # Estimate the flux squared for Eddy Loss calculation.
-                # Max flux occurs at
-                # - innermost radius
-                # - at x (and phase) where cos(kx) is 1
-                # - at y on either edge
-                # sinh(x)**2 + cosh(x)**2 = cosh(2x)
                 if q == 0:
-                    B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
+
+                    # Max flux occurs at
+                    # - innermost radius
+                    # - at x (and phase) where cos(kx) is 1
+                    # - at y on either edge
+                    # sinh(x)**2 + cosh(x)**2 = cosh(2x)
+                    #B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
+
+                    # Simpler estimation of max flux from the paper 2.
+                    B_sq_max_est = (Bterm * np.cosh(0)) ** 2
 
                 # Torque for each coil at radius r.
                 T_coil[q] = (r_q * np.sum(F))
@@ -313,6 +317,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         # Eddy loss calculcation. (W)
         vol_cond = 2.0 * (RF - R0) * Awires * nphase * npole
         Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
+        PPe = 0.5 * nphase * npole * (np.pi * npole * RPM / 60.0 * 2.0 * rwire)**2 * (RF - R0) * Awires * B_sq_max_est / resistivity
 
         efficiency = (P - PR - Pe) / P
 
@@ -541,17 +546,15 @@ class DoubleHalbachMotorComp(ExplicitComponent):
                 dF_drpm = (J * dBy_drpm + dJ_drpm * By) * dr
 
                 if q == 0:
-                    B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
-                    Dbsqmax_dRF = 2.0 * Bterm * dBt_dRF * np.cosh(2.0 * k * y[0]) + \
-                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * y[0] * dk_dRF
-                    Dbsqmax_dR0 = 2.0 * Bterm * dBt_dR0 * np.cosh(2.0 * k * y[0]) + \
-                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * y[0] * dk_dR0
-                    Dbsqmax_dyw = 2.0 * Bterm * dBt_dyw * np.cosh(2.0 * k * y[0]) + \
-                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * k * dy_yw[0]
-                    Dbsqmax_dag = 2.0 * Bterm * dBt_dag * np.cosh(2.0 * k * y[0]) + \
-                                  Bterm**2 * np.sinh(2.0 * k * y[0]) * 2.0 * k * dy_ag[0]
-                    Dbsqmax_dym = 2.0 * Bterm * dBt_dym * np.cosh(2.0 * k * y[0])
-                    Dbsqmax_dxm = 2.0 * Bterm * dBt_dxm * np.cosh(2.0 * k * y[0])
+                    #B_sq_max_est = Bterm**2 * np.cosh(2.0 * k * y[0])
+                    B_sq_max_est = (Bterm * np.cosh(0)) ** 2
+
+                    Dbsqmax_dRF = 2.0 * Bterm * dBt_dRF * np.cosh(0)
+                    Dbsqmax_dR0 = 2.0 * Bterm * dBt_dR0 * np.cosh(0)
+                    Dbsqmax_dyw = 2.0 * Bterm * dBt_dyw * np.cosh(0)
+                    Dbsqmax_dag = 2.0 * Bterm * dBt_dag * np.cosh(0)
+                    Dbsqmax_dym = 2.0 * Bterm * dBt_dym * np.cosh(0)
+                    Dbsqmax_dxm = 2.0 * Bterm * dBt_dxm * np.cosh(0)
 
                 # Torque for each coil at radius r.
                 T_coil[q] = (r_q * np.sum(F))
