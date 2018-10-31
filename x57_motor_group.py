@@ -85,12 +85,11 @@ class MotorGroup(Group):
         self.connect('dv.outer_radius', 'windage.outer_radius')
 
         # Summation of all losses to give net power.
-        self.add_subsystem('sum_losses', ExecComp("net_power = power_ideal - resistive_loss - eddy_current_loss - bearing_loss - windage_loss",
-                           power_ideal={'units' : 'kW'}, resistive_loss={'units' : 'kW'}, eddy_current_loss={'units' : 'kW'},
+        self.add_subsystem('sum_losses', ExecComp("net_power = power_ideal - eddy_current_loss - bearing_loss - windage_loss",
+                           power_ideal={'units' : 'kW'}, eddy_current_loss={'units' : 'kW'},
                            bearing_loss={'units' : 'kW'}, windage_loss={'units' : 'kW'}, net_power={'units' : 'kW'}))
 
         self.connect('motor.power_ideal', 'sum_losses.power_ideal')
-        self.connect('motor.resistive_loss', 'sum_losses.resistive_loss')
         self.connect('motor.eddy_current_loss', 'sum_losses.eddy_current_loss')
         self.connect('bearing.bearing_loss', 'sum_losses.bearing_loss')
         self.connect('windage.windage_loss', 'sum_losses.windage_loss')

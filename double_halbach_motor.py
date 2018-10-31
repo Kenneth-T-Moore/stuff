@@ -244,6 +244,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         self.current_density = Ipeak / Awires * .000001
 
         # Calculate resistance.
+        # (Equation 10 in ref 2)
         phase_R = wire_length * resistivity / (A * cfill)
         PR = nphase * 0.5 * phase_R * (Ipeak)**2
 
@@ -319,10 +320,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         Pe = 0.5 * (np.pi * npole * RPM/60.0 * 2.0 * rwire)**2 * vol_cond / resistivity * B_sq_max_est
         PPe = 0.5 * nphase * npole * (np.pi * npole * RPM / 60.0 * 2.0 * rwire)**2 * (RF - R0) * Awires * B_sq_max_est / resistivity
 
-        efficiency = (P - PR - Pe) / P
+        efficiency = (P - Pe) / (P + PR)
 
         # Mass sum. (kg)
-        M_stator = wire_length * Awires * self.rho_stator * nphase * 2
+        M_stator = wire_length * Awires * self.rho_stator * nphase
         M = M_stator + M_magnet
 
         # Power Density (converted to kW/kg)
@@ -598,10 +599,10 @@ class DoubleHalbachMotorComp(ExplicitComponent):
         dPe_drpm = (np.pi * npole * rwire / 30.0)**2 * RPM * B_sq_max_est * vol_cond / resistivity
 
         # Mass sum. (kg)
-        M_stator = wire_length * Awires * self.rho_stator * nphase * 2
-        dMstat_dRF = dwl_dRF * Awires * rho_stator * nphase * 2
-        dMstat_dR0 = (dwl_dR0 * Awires + wire_length * dA_dR0 * cfill) * rho_stator * nphase * 2
-        dMstat_dyw = wire_length * dA_dyw * cfill * rho_stator * nphase * 2
+        M_stator = wire_length * Awires * self.rho_stator * nphase
+        dMstat_dRF = dwl_dRF * Awires * rho_stator * nphase
+        dMstat_dR0 = (dwl_dR0 * Awires + wire_length * dA_dR0 * cfill) * rho_stator * nphase
+        dMstat_dyw = wire_length * dA_dyw * cfill * rho_stator * nphase
 
         M = M_stator + M_magnet
 

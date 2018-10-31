@@ -78,10 +78,11 @@ for k, val2 in enumerate(sidevar):
         Rmid = 0.5 * (Rf + R0)
 
         # Main difference: Duffy ignores cfill during calculation of current density.
-        coil_area = yw * (2.0 * np.pi * Rmid)/(nphase * 2 * npole)
+        #coil_area = yw * (2.0 * np.pi * Rmid)/(nphase * 2 * npole)
+        coil_area = yw * yw
 
         Ipeak = val2 * coil_area * 1.0e6
-        prob['motor.Ipeak'] = Ipeak
+        prob['motor.Ipeak'] = Ipeak * np.sqrt(2.0)
 
         # Set Magnet width so that each design has maximum e percentage at the midpoint radius
         xp = 2.0 * np.pi * Rmid / npole
