@@ -258,7 +258,7 @@ class DoubleHalbachMotorComp(ExplicitComponent):
             # Define Coil Currents in each coil direction
             I = Ipeak * np.cos(npole * omega * t_z - (2.0 * pi / nphase) * np.arange(nphase))
             I = np.append(I, -I)     # current moves in and out of plane
-            J = I / Awires           # Amps/m**2 Current Density
+            J = I / A                # Amps/m**2 Current Density
 
             # Integrating over radius (dr) at all points simultaneously via vector operation.
 
